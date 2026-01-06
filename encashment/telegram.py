@@ -25,7 +25,20 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+DELIVERY_POINT_CHAT_ID = os.getenv("DELIVERY_POINT_CHAT_ID")
 LAST_RUN_FILE = Path.home() / ".encashment_last_run"
+
+# Маппинг типов ПВЗ на chat_id
+CHAT_IDS = {
+    'FRANCHISE': TELEGRAM_CHAT_ID,
+    'DELIVERY_POINT': DELIVERY_POINT_CHAT_ID,
+}
+
+# Названия типов для отображения
+DP_TYPE_NAMES = {
+    'FRANCHISE': 'Франчайзи',
+    'DELIVERY_POINT': 'Собственные',
+}
 
 # Хосты для проверки VPN
 VPN_HOSTS = [
@@ -50,11 +63,13 @@ def check_vpn() -> bool:
     return False
 
 
-def send_telegram_message(text: str, parse_mode: str = "HTML") -> bool:
+def send_telegram_message(text: str, chat_id: str = None, parse_mode: str = "HTML") -> bool:
     """Отправить сообщение в Telegram"""
+    if chat_id is None:
+        chat_id = TELEGRAM_CHAT_ID
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_id,
         "text": text,
         "parse_mode": parse_mode,
     }
@@ -86,6 +101,10 @@ def categorize_reason(comment: str) -> str:
 
 def format_report_for_telegram(report_df: pd.DataFrame, report_date: datetime) -> str:
     """Форматирование отчета для Telegram"""
+    # Получаем тип ПВЗ из метаданных
+    dp_type = report_df.attrs.get('delivery_point_type', 'FRANCHISE')
+    dp_type_name = DP_TYPE_NAMES.get(dp_type, dp_type)
+
     problems = report_df[report_df['conclusion'] == 'Не сдал, а должен был'].copy()
     no_schedule = report_df[report_df['conclusion'] == 'НЕТ ГРАФИКА']
 
@@ -107,7 +126,7 @@ def format_report_for_telegram(report_df: pd.DataFrame, report_date: datetime) -
 
     # Заголовок
     lines = [
-        f"<b>Инкассация ПВЗ</b>",
+        f"<b>Инкассация ПВЗ ({dp_type_name})</b>",
         f"Дата: {report_date.strftime('%d.%m.%Y')}",
         f"Всего ПВЗ: {unique_pvz}",
         f"📅 По графику сегодня: <b>{scheduled_today}</b>",
@@ -208,31 +227,35 @@ def get_missed_dates(last_run: datetime | None) -> list[datetime]:
     return missed
 
 
-def send_report_for_date(report_date: datetime) -> bool:
+def send_report_for_date(report_date: datetime, delivery_point_type: str = 'FRANCHISE') -> bool:
     """Сформировать и отправить отчет за конкретную дату"""
-    print(f"Формирование отчета за {report_date.date()}...")
+    dp_type_name = DP_TYPE_NAMES.get(delivery_point_type, delivery_point_type)
+    print(f"Формирование отчета ({dp_type_name}) за {report_date.date()}...")
 
     date_from = report_date
     date_to = report_date + timedelta(days=1)
 
     try:
-        report = build_encashment_report(date_from, date_to)
+        report = build_encashment_report(date_from, date_to, delivery_point_type)
 
         if report.empty:
-            print(f"  Нет данных за {report_date.date()}")
+            print(f"  Нет данных ({dp_type_name}) за {report_date.date()}")
             return True  # Считаем успешным, просто нет данных
 
         message = format_report_for_telegram(report, report_date)
 
-        if send_telegram_message(message):
-            print(f"  Отчет за {report_date.date()} отправлен")
+        # Получаем chat_id для этого типа ПВЗ
+        chat_id = CHAT_IDS.get(delivery_point_type, TELEGRAM_CHAT_ID)
+
+        if send_telegram_message(message, chat_id=chat_id):
+            print(f"  Отчет ({dp_type_name}) за {report_date.date()} отправлен")
             return True
         else:
-            print(f"  Ошибка отправки отчета за {report_date.date()}")
+            print(f"  Ошибка отправки отчета ({dp_type_name}) за {report_date.date()}")
             return False
 
     except Exception as e:
-        print(f"  Ошибка формирования отчета: {e}")
+        print(f"  Ошибка формирования отчета ({dp_type_name}): {e}")
         return False
 
 
@@ -267,20 +290,36 @@ def main():
     print(f"Даты для отправки: {[d.strftime('%Y-%m-%d') for d in missed_dates]}")
     print()
 
-    # Отправляем отчеты
-    success_count = 0
+    # Типы ПВЗ для обработки
+    dp_types = ['FRANCHISE', 'DELIVERY_POINT']
+
+    # Отправляем отчеты для каждого типа ПВЗ
+    overall_success = True
+    last_successful_date = None
+
     for date in missed_dates:
-        if send_report_for_date(date):
+        date_success = True
+        for dp_type in dp_types:
+            # Проверяем, настроен ли chat_id для этого типа
+            chat_id = CHAT_IDS.get(dp_type)
+            if not chat_id:
+                print(f"  ПРЕДУПРЕЖДЕНИЕ: Chat ID не настроен для {dp_type}, пропуск")
+                continue
+
+            if not send_report_for_date(date, dp_type):
+                date_success = False
+                overall_success = False
+
+        # Сохраняем дату только если хотя бы один отчёт отправлен успешно
+        if date_success:
             save_last_run_date(date)
-            success_count += 1
-        else:
-            # Если не удалось отправить - прекращаем
-            break
+            last_successful_date = date
 
     print()
-    print(f"Отправлено отчетов: {success_count}/{len(missed_dates)}")
+    if last_successful_date:
+        print(f"Последняя успешная дата: {last_successful_date.date()}")
 
-    return 0 if success_count == len(missed_dates) else 1
+    return 0 if overall_success else 1
 
 
 if __name__ == "__main__":

@@ -30,6 +30,19 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+DELIVERY_POINT_CHAT_ID = os.getenv("DELIVERY_POINT_CHAT_ID")
+
+# Маппинг типов ПВЗ на chat_id
+CHAT_IDS = {
+    'FRANCHISE': TELEGRAM_CHAT_ID,
+    'DELIVERY_POINT': DELIVERY_POINT_CHAT_ID,
+}
+
+# Названия типов для отображения
+DP_TYPE_NAMES = {
+    'FRANCHISE': 'Франчайзи',
+    'DELIVERY_POINT': 'Собственные',
+}
 
 # Файл для отслеживания последнего успешного контрольного запуска
 LAST_RUN_FILE = Path.home() / ".late_opening_last_run"
@@ -103,11 +116,13 @@ def should_send_final_report(now_tashkent: datetime) -> bool:
     return True
 
 
-def send_telegram_message(text: str, parse_mode: str = "HTML") -> bool:
+def send_telegram_message(text: str, chat_id: str = None, parse_mode: str = "HTML") -> bool:
     """Отправить сообщение в Telegram"""
+    if chat_id is None:
+        chat_id = TELEGRAM_CHAT_ID
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_id,
         "text": text,
         "parse_mode": parse_mode,
     }
@@ -138,13 +153,17 @@ def format_report_for_telegram(report_df: pd.DataFrame, report_date: datetime, c
     schedule_time = report_df.attrs.get('schedule_time')
     use_individual = report_df.attrs.get('use_individual_schedule', False)
 
+    # Получаем тип ПВЗ
+    dp_type = report_df.attrs.get('delivery_point_type', 'FRANCHISE')
+    dp_type_name = DP_TYPE_NAMES.get(dp_type, dp_type)
+
     # Определяем время проверки
     if check_time is None:
         check_time = datetime.now().strftime('%H:%M')
 
     # Заголовок зависит от режима
     if mode == "bucket" and schedule_time:
-        title = f"<b>Открытие ПВЗ (расписание {schedule_time})</b>"
+        title = f"<b>Открытие ПВЗ ({dp_type_name}, расписание {schedule_time})</b>"
         lines = [
             title,
             f"Дата: {report_date.strftime('%d.%m.%Y')} | Проверка: {check_time}",
@@ -153,7 +172,7 @@ def format_report_for_telegram(report_df: pd.DataFrame, report_date: datetime, c
             f"✅ Открылись вовремя: {on_time_pvz}",
         ]
     elif mode == "final":
-        title = f"<b>Открытие ПВЗ (контрольный)</b>"
+        title = f"<b>Открытие ПВЗ ({dp_type_name}, контрольный)</b>"
         lines = [
             title,
             f"Дата: {report_date.strftime('%d.%m.%Y')} | Проверка: {check_time}",
@@ -162,7 +181,7 @@ def format_report_for_telegram(report_df: pd.DataFrame, report_date: datetime, c
             f"✅ Открылись вовремя: {on_time_pvz}",
         ]
     else:
-        title = f"<b>Открытие ПВЗ</b>"
+        title = f"<b>Открытие ПВЗ ({dp_type_name})</b>"
         lines = [
             title,
             f"Дата: {report_date.strftime('%d.%m.%Y')} | Проверка: {check_time}",
@@ -268,51 +287,68 @@ def main():
     date_from = today
     date_to = today + timedelta(days=1)
 
-    print(f"Формирование отчета за {today.date()}...")
+    # Типы ПВЗ для обработки
+    dp_types = ['FRANCHISE', 'DELIVERY_POINT']
 
-    try:
-        # Определяем параметры в зависимости от режима
-        if args.mode == 'bucket':
-            if not args.schedule:
-                print("Ошибка: для режима bucket требуется --schedule")
-                return 1
-            report = build_late_opening_report(
-                date_from, date_to,
-                deadline_time=args.deadline,
-                schedule_time=args.schedule
-            )
-        else:  # final - индивидуальное сравнение с расписанием каждого ПВЗ
-            report = build_late_opening_report(
-                date_from, date_to,
-                deadline_time=args.deadline,  # None = индивидуальное сравнение
-                schedule_time=None
-            )
+    overall_success = True
 
-        total_pvz = report.attrs.get('total_pvz', 0)
-        if total_pvz == 0:
-            print(f"  Нет данных за {today.date()}")
-            return 0
+    for dp_type in dp_types:
+        dp_type_name = DP_TYPE_NAMES.get(dp_type, dp_type)
 
-        message = format_report_for_telegram(report, today, check_time, mode=args.mode)
+        # Проверяем, настроен ли chat_id для этого типа
+        chat_id = CHAT_IDS.get(dp_type)
+        if not chat_id:
+            print(f"ПРЕДУПРЕЖДЕНИЕ: Chat ID не настроен для {dp_type}, пропуск")
+            continue
 
-        if send_telegram_message(message):
-            print(f"  Отчет отправлен")
+        print(f"\n--- Обработка типа: {dp_type_name} ---")
+        print(f"Формирование отчета за {today.date()}...")
 
-            # Сохраняем дату успешной отправки контрольного отчета
-            if args.mode == 'final':
-                save_last_run_date(today)
-                print(f"  Дата контрольного отчета сохранена: {today.date()}")
+        try:
+            # Определяем параметры в зависимости от режима
+            if args.mode == 'bucket':
+                if not args.schedule:
+                    print("Ошибка: для режима bucket требуется --schedule")
+                    return 1
+                report = build_late_opening_report(
+                    date_from, date_to,
+                    deadline_time=args.deadline,
+                    schedule_time=args.schedule,
+                    delivery_point_type=dp_type
+                )
+            else:  # final - индивидуальное сравнение с расписанием каждого ПВЗ
+                report = build_late_opening_report(
+                    date_from, date_to,
+                    deadline_time=args.deadline,  # None = индивидуальное сравнение
+                    schedule_time=None,
+                    delivery_point_type=dp_type
+                )
 
-            return 0
-        else:
-            print(f"  Ошибка отправки отчета")
-            return 1
+            total_pvz = report.attrs.get('total_pvz', 0)
+            if total_pvz == 0:
+                print(f"  Нет данных ({dp_type_name}) за {today.date()}")
+                continue
 
-    except Exception as e:
-        print(f"  Ошибка формирования отчета: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
+            message = format_report_for_telegram(report, today, check_time, mode=args.mode)
+
+            if send_telegram_message(message, chat_id=chat_id):
+                print(f"  Отчет ({dp_type_name}) отправлен")
+            else:
+                print(f"  Ошибка отправки отчета ({dp_type_name})")
+                overall_success = False
+
+        except Exception as e:
+            print(f"  Ошибка формирования отчета ({dp_type_name}): {e}")
+            import traceback
+            traceback.print_exc()
+            overall_success = False
+
+    # Сохраняем дату успешной отправки контрольного отчета
+    if args.mode == 'final' and overall_success:
+        save_last_run_date(today)
+        print(f"\nДата контрольного отчета сохранена: {today.date()}")
+
+    return 0 if overall_success else 1
 
 
 if __name__ == "__main__":

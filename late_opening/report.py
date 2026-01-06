@@ -33,9 +33,12 @@ def get_pg_engine(dbname):
     return create_engine(url)
 
 
-def get_dp_schedule():
+def get_dp_schedule(delivery_point_type: str = 'FRANCHISE'):
     """
     Получить расписание работы ПВЗ из ClickHouse WMS
+
+    Args:
+        delivery_point_type: тип точки доставки ('FRANCHISE' или 'DELIVERY_POINT')
     """
     client = get_wms_client()
 
@@ -46,12 +49,12 @@ def get_dp_schedule():
         time_from,
         time_to
     FROM bronze.delivery_db_delivery_point
-    WHERE delivery_point_type = 'FRANCHISE'
+    WHERE delivery_point_type = %(dp_type)s
       AND active = 1
       AND short_name NOT LIKE 'ip%'
     """
 
-    result = client.query(query)
+    result = client.query(query, parameters={'dp_type': delivery_point_type})
 
     df = pd.DataFrame(result.result_rows, columns=[
         'short_name', 'dp_key', 'time_from', 'time_to'
@@ -96,17 +99,18 @@ def parse_time(time_str):
         return None
 
 
-def get_schedule_buckets():
+def get_schedule_buckets(delivery_point_type: str = 'FRANCHISE'):
     """
     Получить список уникальных времён открытия (бакетов)
     Возвращает отсортированный список времён в формате HH:MM
     """
-    schedule_df = get_dp_schedule()
+    schedule_df = get_dp_schedule(delivery_point_type)
     buckets = schedule_df['time_from'].dropna().unique()
     return sorted(buckets)
 
 
-def build_late_opening_report(date_from=None, date_to=None, deadline_time=None, schedule_time=None):
+def build_late_opening_report(date_from=None, date_to=None, deadline_time=None, schedule_time=None,
+                               delivery_point_type: str = 'FRANCHISE'):
     """
     Построить отчет по опозданиям открытия ПВЗ
 
@@ -117,6 +121,7 @@ def build_late_opening_report(date_from=None, date_to=None, deadline_time=None, 
         schedule_time: фильтр по расписанию открытия (например "09:00" или "10:00")
                       Если указано - отбираются только ПВЗ с этим временем открытия
                       и deadline_time = schedule_time (должны открыться к своему времени)
+        delivery_point_type: тип точки доставки ('FRANCHISE' или 'DELIVERY_POINT')
     """
     if date_from is None:
         date_from = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -125,10 +130,10 @@ def build_late_opening_report(date_from=None, date_to=None, deadline_time=None, 
 
     print(f"Период: {date_from.date()} - {date_to.date()}")
 
-    # 1. Получаем расписание (для списка франчайзи)
-    print("Загрузка списка ПВЗ...")
-    schedule_df = get_dp_schedule()
-    print(f"  Загружено {len(schedule_df)} франчайзи")
+    # 1. Получаем расписание (для списка ПВЗ)
+    print(f"Загрузка списка ПВЗ ({delivery_point_type})...")
+    schedule_df = get_dp_schedule(delivery_point_type)
+    print(f"  Загружено {len(schedule_df)} ПВЗ типа {delivery_point_type}")
 
     # Режим сравнения: bucket (единый дедлайн) или individual (каждый ПВЗ со своим расписанием)
     use_individual_schedule = False
@@ -181,6 +186,7 @@ def build_late_opening_report(date_from=None, date_to=None, deadline_time=None, 
         empty_df.attrs['not_opened_list'] = sorted(schedule_df['short_name'].unique())
         empty_df.attrs['schedule_time'] = schedule_time
         empty_df.attrs['deadline_time'] = deadline_time
+        empty_df.attrs['delivery_point_type'] = delivery_point_type
         return empty_df
 
     # 4. Вычисляем опоздание
@@ -241,7 +247,7 @@ def build_late_opening_report(date_from=None, date_to=None, deadline_time=None, 
     ]].copy()
 
     # Метаданные
-    report_df.attrs['total_pvz'] = total_franchise  # Все франчайзи
+    report_df.attrs['total_pvz'] = total_franchise  # Все ПВЗ
     report_df.attrs['opened_pvz'] = opened_pvz      # Открылись
     report_df.attrs['late_pvz'] = late_pvz          # Опоздали
     report_df.attrs['on_time_pvz'] = on_time_pvz    # Вовремя
@@ -250,6 +256,7 @@ def build_late_opening_report(date_from=None, date_to=None, deadline_time=None, 
     report_df.attrs['schedule_time'] = schedule_time  # Бакет времени открытия
     report_df.attrs['deadline_time'] = deadline_time  # Дедлайн
     report_df.attrs['use_individual_schedule'] = use_individual_schedule  # Индивидуальное сравнение
+    report_df.attrs['delivery_point_type'] = delivery_point_type  # Тип ПВЗ
 
     return report_df
 

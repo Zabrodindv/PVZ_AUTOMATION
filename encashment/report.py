@@ -36,9 +36,12 @@ def get_pg_engine(dbname):
     return create_engine(url)
 
 
-def get_franchise_list():
+def get_delivery_points_list(delivery_point_type: str = 'FRANCHISE'):
     """
-    Получить список франчайзи из ClickHouse WMS (единый источник для всех отчётов)
+    Получить список ПВЗ из ClickHouse WMS по типу
+
+    Args:
+        delivery_point_type: тип точки доставки ('FRANCHISE' или 'DELIVERY_POINT')
     """
     client = get_wms_client()
 
@@ -47,17 +50,22 @@ def get_franchise_list():
         short_name,
         key
     FROM bronze.delivery_db_delivery_point
-    WHERE delivery_point_type = 'FRANCHISE'
+    WHERE delivery_point_type = %(dp_type)s
       AND active = 1
       AND short_name NOT LIKE 'ip%'
     """
 
-    result = client.query(query)
+    result = client.query(query, parameters={'dp_type': delivery_point_type})
 
     df = pd.DataFrame(result.result_rows, columns=['short_name', 'dp_key'])
     df['short_name'] = df['short_name'].str.strip()
 
     return df
+
+
+# Алиас для обратной совместимости
+def get_franchise_list():
+    return get_delivery_points_list('FRANCHISE')
 
 
 def get_encashment_schedule():
@@ -177,9 +185,14 @@ def get_encashment_data(date_from, date_to, dp_map):
     return df
 
 
-def build_encashment_report(date_from=None, date_to=None):
+def build_encashment_report(date_from=None, date_to=None, delivery_point_type: str = 'FRANCHISE'):
     """
     Построить отчет по инкассации
+
+    Args:
+        date_from: начало периода
+        date_to: конец периода
+        delivery_point_type: тип точки доставки ('FRANCHISE' или 'DELIVERY_POINT')
     """
     if date_from is None:
         date_from = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
@@ -189,10 +202,10 @@ def build_encashment_report(date_from=None, date_to=None):
     print(f"Период: {date_from.date()} - {date_to.date()}")
     print()
 
-    # 1. Получаем список франчайзи из WMS (единый источник)
-    print("Загрузка списка ПВЗ из WMS...")
-    franchise_df = get_franchise_list()
-    print(f"  Загружено {len(franchise_df)} франчайзи")
+    # 1. Получаем список ПВЗ из WMS (единый источник)
+    print(f"Загрузка списка ПВЗ ({delivery_point_type}) из WMS...")
+    franchise_df = get_delivery_points_list(delivery_point_type)
+    print(f"  Загружено {len(franchise_df)} ПВЗ типа {delivery_point_type}")
 
     # Создаём маппинг dp_key -> short_name
     dp_map = {str(row['dp_key']): row['short_name'] for _, row in franchise_df.iterrows()}
@@ -267,10 +280,15 @@ def build_encashment_report(date_from=None, date_to=None):
     # Используем short_name вместо dp_shortname
     result_df['dp_shortname'] = result_df['short_name']
 
-    return result_df[[
+    final_df = result_df[[
         'dp_shortname', 'encashment_days_str', 'work_shift_day',
         'day_of_week', 'encashment_amount', 'conclusion', 'comment', 'has_schedule'
     ]]
+
+    # Добавляем метаданные о типе ПВЗ
+    final_df.attrs['delivery_point_type'] = delivery_point_type
+
+    return final_df
 
 
 def print_summary(df):
