@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+ENV/
+
+# Environment variables (secrets)
+.env
+*.env
+
+# Logs
+*.log
+.late_opening_last_run
+.encashment_last_run
+.vpn_monitor_state.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Test files
+test_*.py
+!tests/test_*.py
+
+# Temp files
+*.tmp
+*.temp
+/tmp/
+
+# Build
+dist/
+build/
+*.egg-info/

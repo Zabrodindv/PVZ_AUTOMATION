@@ -1,0 +1,36 @@
+name: Deploy to Raspberry Pi
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Sync to working directory
+        run: |
+          rsync -av --delete \
+            --exclude='venv' \
+            --exclude='.env' \
+            --exclude='__pycache__' \
+            --exclude='.git' \
+            --exclude='.github' \
+            ./ ~/pvz_automation/
+
+      - name: Install dependencies
+        run: |
+          cd ~/pvz_automation
+          source venv/bin/activate
+          pip install -q -r requirements.txt
+
+      - name: Verify deployment
+        run: |
+          cd ~/pvz_automation
+          source venv/bin/activate
+          python -c "import config; print('Config OK')"
+          echo "Deployment completed at $(date)"
