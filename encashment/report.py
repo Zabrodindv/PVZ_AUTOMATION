@@ -52,7 +52,7 @@ def get_delivery_points_list(delivery_point_type: str = 'FRANCHISE'):
     FROM bronze.delivery_db_delivery_point
     WHERE delivery_point_type = %(dp_type)s
       AND active = 1
-      AND short_name NOT LIKE 'ip%'
+      AND short_name NOT LIKE 'ip%%'
     """
 
     result = client.query(query, parameters={'dp_type': delivery_point_type})
