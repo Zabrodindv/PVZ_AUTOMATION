@@ -145,7 +145,7 @@ def send_telegram_message(text: str, chat_id: str = None, parse_mode: str = "HTM
     session.mount('https://', adapter)
 
     try:
-        response = session.post(url, json=payload, timeout=30)
+        response = session.post(url, json=payload, timeout=60)
         return response.status_code == 200
     except Exception as e:
         print(f"Ошибка отправки в Telegram: {e}")
