@@ -73,6 +73,9 @@ def check_vpn() -> bool:
 
 def send_telegram_message(text: str, chat_id: str = None, parse_mode: str = "HTML") -> bool:
     """Отправить сообщение в Telegram"""
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
     if chat_id is None:
         chat_id = TELEGRAM_CHAT_ID
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -81,12 +84,21 @@ def send_telegram_message(text: str, chat_id: str = None, parse_mode: str = "HTM
         "text": text,
         "parse_mode": parse_mode,
     }
+
+    # Новая сессия с retry для обхода проблем с VPN/connection pool
+    session = requests.Session()
+    retry = Retry(total=3, backoff_factor=0.5)
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=1, pool_maxsize=1)
+    session.mount('https://', adapter)
+
     try:
-        response = requests.post(url, json=payload, timeout=30)
+        response = session.post(url, json=payload, timeout=30)
         return response.status_code == 200
     except Exception as e:
         print(f"Ошибка отправки в Telegram: {e}")
         return False
+    finally:
+        session.close()
 
 
 def categorize_reason(comment: str) -> str:
