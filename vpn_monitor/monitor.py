@@ -12,7 +12,7 @@ import json
 import logging
 import subprocess
 import time
-import requests
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
@@ -121,13 +121,15 @@ def is_vpn_connected() -> bool:
     return netbird_ok and connectivity_ok
 
 
-def reconnect_vpn(max_retries: int = 3) -> tuple[bool, int]:
+def reconnect_vpn(max_retries: int = 3) -> tuple[bool, int, str | None]:
     """
     Переподключить VPN через netbird down/up
 
     Returns:
-        tuple[bool, int]: (успех, номер попытки)
+        tuple[bool, int, str | None]: (успех, номер попытки, auth_url если требуется SSO)
     """
+    auth_url = None
+
     for attempt in range(1, max_retries + 1):
         logger.info(f"Попытка переподключения {attempt}/{max_retries}")
 
@@ -156,6 +158,17 @@ def reconnect_vpn(max_retries: int = 3) -> tuple[bool, int]:
                 timeout=15
             )
 
+            output = result_up.stdout + result_up.stderr
+
+            # Проверяем, требуется ли SSO авторизация
+            if "SSO login" in output or "user_code" in output:
+                # Извлекаем URL для авторизации
+                url_match = re.search(r'(https://[^\s]+user_code=[A-Z0-9-]+)', output)
+                if url_match:
+                    auth_url = url_match.group(1)
+                    logger.warning(f"Требуется SSO авторизация: {auth_url}")
+                    return False, attempt, auth_url
+
             if result_up.returncode != 0:
                 logger.warning(f"netbird up вернул код {result_up.returncode}: {result_up.stderr}")
                 continue
@@ -167,7 +180,7 @@ def reconnect_vpn(max_retries: int = 3) -> tuple[bool, int]:
             # 5. Проверяем подключение
             if is_vpn_connected():
                 logger.info(f"VPN успешно переподключён (попытка {attempt})")
-                return True, attempt
+                return True, attempt, None
             else:
                 logger.warning(f"VPN не подключился после попытки {attempt}")
 
@@ -181,33 +194,42 @@ def reconnect_vpn(max_retries: int = 3) -> tuple[bool, int]:
             time.sleep(3)
 
     logger.error(f"Не удалось переподключить VPN после {max_retries} попыток")
-    return False, max_retries
+    return False, max_retries, auth_url
 
 
-def send_telegram_alert(message: str) -> bool:
-    """Отправить уведомление в Telegram"""
+def send_telegram_alert(message: str, retries: int = 3) -> bool:
+    """Отправить уведомление в Telegram через curl (обход VPN/DNS проблем)"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.warning("Telegram credentials не настроены")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
+    payload = json.dumps({
         "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
         "parse_mode": "HTML",
-    }
+    })
 
-    try:
-        response = requests.post(url, json=payload, timeout=30)
-        if response.status_code == 200:
-            logger.info("Telegram уведомление отправлено")
-            return True
-        else:
-            logger.warning(f"Telegram API вернул код {response.status_code}")
-            return False
-    except Exception as e:
-        logger.error(f"Ошибка отправки в Telegram: {e}")
-        return False
+    for attempt in range(retries):
+        try:
+            result = subprocess.run(
+                ['curl', '-s', '-X', 'POST', url,
+                 '-H', 'Content-Type: application/json',
+                 '-d', payload],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            response = json.loads(result.stdout)
+            if response.get('ok', False):
+                logger.info("Telegram уведомление отправлено")
+                return True
+        except Exception as e:
+            if attempt == retries - 1:
+                logger.error(f"Ошибка отправки в Telegram: {e}")
+            else:
+                time.sleep(2)
+    return False
 
 
 def load_state() -> dict:
@@ -291,6 +313,16 @@ Netbird успешно переподключён
 
 Требуется ручное вмешательство!"""
 
+    elif event_type == "auth_required":
+        auth_url = kwargs.get("auth_url", "")
+        return f"""🔐 <b>VPN Требует Авторизации</b>
+
+Токен Netbird истёк.
+Время: {now}
+
+<b>Перейди по ссылке для авторизации:</b>
+{auth_url}"""
+
     elif event_type == "recovered":
         return f"""✅ <b>VPN Восстановлен Автоматически</b>
 
@@ -340,7 +372,7 @@ def main():
             state["last_notification_time"] = datetime.now().isoformat()
 
         # Пытаемся переподключить
-        success, attempt = reconnect_vpn(max_retries=3)
+        success, attempt, auth_url = reconnect_vpn(max_retries=3)
 
         if success:
             # Успешное переподключение
@@ -355,6 +387,14 @@ def main():
             state["last_status"] = "connected"
             state["reconnect_count"] += 1
             state["consecutive_failures"] = 0
+        elif auth_url:
+            # Требуется SSO авторизация
+            logger.warning(f"Требуется SSO авторизация: {auth_url}")
+            message = format_telegram_message("auth_required", auth_url=auth_url)
+            send_telegram_alert(message)
+            state["last_notification_time"] = datetime.now().isoformat()
+            state["last_status"] = "auth_required"
+            state["consecutive_failures"] += 1
         else:
             # Неудачное переподключение
             logger.error("Не удалось переподключить VPN")
