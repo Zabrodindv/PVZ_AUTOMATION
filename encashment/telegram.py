@@ -71,9 +71,10 @@ def check_vpn() -> bool:
     return False
 
 
-def send_telegram_message(text: str, chat_id: str = None, parse_mode: str = "HTML") -> bool:
+def send_telegram_message(text: str, chat_id: str = None, parse_mode: str = "HTML", retries: int = 3) -> bool:
     """Отправить сообщение в Telegram через curl (обход VPN/DNS проблем)"""
     import json
+    import time
 
     if chat_id is None:
         chat_id = TELEGRAM_CHAT_ID
@@ -85,20 +86,25 @@ def send_telegram_message(text: str, chat_id: str = None, parse_mode: str = "HTM
         "parse_mode": parse_mode,
     })
 
-    try:
-        result = subprocess.run(
-            ['curl', '-s', '-X', 'POST', url,
-             '-H', 'Content-Type: application/json',
-             '-d', payload],
-            capture_output=True,
-            text=True,
-            timeout=60
-        )
-        response = json.loads(result.stdout)
-        return response.get('ok', False)
-    except Exception as e:
-        print(f"Ошибка отправки в Telegram: {e}")
-        return False
+    for attempt in range(retries):
+        try:
+            result = subprocess.run(
+                ['curl', '-s', '-X', 'POST', url,
+                 '-H', 'Content-Type: application/json',
+                 '-d', payload],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            response = json.loads(result.stdout)
+            if response.get('ok', False):
+                return True
+        except Exception as e:
+            if attempt == retries - 1:
+                print(f"Ошибка отправки в Telegram: {e}")
+            else:
+                time.sleep(2)  # Пауза перед повтором
+    return False
 
 
 def categorize_reason(comment: str) -> str:
