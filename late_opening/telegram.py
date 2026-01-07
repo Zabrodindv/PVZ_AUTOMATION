@@ -57,7 +57,7 @@ LAST_RUN_FILE = Path.home() / ".late_opening_last_run"
 
 # Время контрольного замера (Ташкент)
 FINAL_CHECK_HOUR = 11
-FINAL_CHECK_MINUTE = 0
+FINAL_CHECK_MINUTE = 30
 
 # Хосты для проверки VPN
 VPN_HOSTS = [
@@ -204,8 +204,16 @@ def format_report_for_telegram(report_df: pd.DataFrame, report_date: datetime, c
             f"Дата: {report_date.strftime('%d.%m.%Y')} | Проверка: {check_time}",
             "",
             f"Всего ПВЗ: <b>{total_pvz}</b>",
-            f"✅ Открылись вовремя: {on_time_pvz}",
+            f"✅ Вовремя: {on_time_pvz}",
         ]
+
+        # Добавляем опоздавших сразу в заголовок
+        if late_pvz > 0:
+            lines.append(f"⏰ Опоздали: <b>{late_pvz}</b>")
+
+        # Добавляем не открывшихся сразу в заголовок
+        if not_opened_pvz > 0:
+            lines.append(f"⚠️ Не открылись: <b>{not_opened_pvz}</b>")
     else:
         title = f"<b>Открытие ПВЗ ({dp_type_name})</b>"
         lines = [
@@ -226,21 +234,18 @@ def format_report_for_telegram(report_df: pd.DataFrame, report_date: datetime, c
             pvz_str = ', '.join(not_opened_list)
             lines.append(f"<code>{pvz_str}</code>")
     else:
-        # В final режиме показываем опоздавших с точным временем открытия
+        # В final режиме показываем детали опоздавших с временем открытия
         if late_pvz > 0:
-            lines.append(f"❌ Опоздали: <b>{late_pvz}</b>")
             lines.append("")
-            lines.append("<b>Опоздавшие ПВЗ:</b>")
             for _, row in report_df.iterrows():
                 scheduled = row.get('scheduled_time', '?')
                 actual = row.get('actual_time', '?')
-                lines.append(f"• {row['short_name']}: открытие {actual} (график {scheduled})")
+                lines.append(f"• {row['short_name']}: {actual} (график {scheduled})")
 
-        # Если есть не открывшиеся к контрольному времени
+        # Если есть не открывшиеся - показываем список
         if not_opened_pvz > 0:
             not_opened_list = report_df.attrs.get('not_opened_list', [])
             lines.append("")
-            lines.append(f"⚠️ <b>Ещё не открылись ({not_opened_pvz}):</b>")
             pvz_str = ', '.join(not_opened_list)
             lines.append(f"<code>{pvz_str}</code>")
 

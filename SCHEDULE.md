@@ -18,7 +18,8 @@
 | **07:00** | 09:00 | Late Opening 0900 | Проверка ПВЗ с графиком 09:00 |
 | **08:00** | 10:00 | Late Opening 1000 | Проверка ПВЗ с графиком 10:00 |
 | **08:00** | 10:00 | PVZ Landing Report | Отчёт по ПВЗ Landing |
-| **09:00** | 11:00 | Late Opening Final | Финальная проверка всех ПВЗ |
+| **09:00** | 11:00 | Late Opening 1100 | Проверка ПВЗ с графиком 11:00 (только Собственные) |
+| **09:30** | 11:30 | Late Opening Final | Финальная проверка всех ПВЗ |
 
 ### Вечер (20:00 MSK)
 
@@ -48,8 +49,11 @@
 # Late Opening 10:00 bucket - отправка в 08:00 МСК
 0 8 * * * /home/denis/pvz_automation/late_opening/run_1000.sh
 
-# Late Opening Final - отправка в 09:00 МСК
-0 9 * * * /home/denis/pvz_automation/late_opening/run_final.sh
+# Late Opening 11:00 bucket - отправка в 09:00 МСК (только Собственные)
+0 9 * * * /home/denis/pvz_automation/late_opening/run_1100.sh
+
+# Late Opening Final - отправка в 09:30 МСК
+30 9 * * * /home/denis/pvz_automation/late_opening/run_final.sh
 
 # Encashment Report - отправка в 20:00 МСК
 0 20 * * * /home/denis/pvz_automation/encashment/run_report.sh
@@ -100,21 +104,28 @@ crontab -e
 - **Уведомления**: Групповой чат (-1003514702147)
 - **Логи**: `~/.late_opening_cron.log`
 
-### 4. PVZ Landing Report
+### 4. Late Opening 1100
+- **Расписание**: Ежедневно в 09:00 MSK
+- **Скрипт**: `/home/denis/pvz_automation/late_opening/run_1100.sh`
+- **Функция**: Проверка ПВЗ с графиком открытия 11:00 (только Собственные)
+- **Уведомления**: Групповой чат (-1003514702147)
+- **Логи**: `~/.late_opening_cron.log`
+
+### 5. PVZ Landing Report
 - **Расписание**: Ежедневно в 08:00 MSK
 - **Скрипт**: `/home/denis/pvz_automation/pvz_landing/run_report.sh`
 - **Функция**: Отчёт по ПВЗ Landing
 - **Уведомления**: Групповой чат (-1003514702147)
 - **Логи**: `~/.pvz_landing_cron.log`
 
-### 5. Late Opening Final
-- **Расписание**: Ежедневно в 09:00 MSK
+### 6. Late Opening Final
+- **Расписание**: Ежедневно в 09:30 MSK
 - **Скрипт**: `/home/denis/pvz_automation/late_opening/run_final.sh`
 - **Функция**: Финальная проверка всех ПВЗ (индивидуальное сравнение с расписанием)
 - **Уведомления**: Групповой чат (-1003514702147)
 - **Логи**: `~/.late_opening_cron.log`
 
-### 6. Encashment Report
+### 7. Encashment Report
 - **Расписание**: Ежедневно в 20:00 MSK
 - **Скрипт**: `/home/denis/pvz_automation/encashment/run_report.sh`
 - **Функция**: Отчёт по инкассации ПВЗ за текущий день
