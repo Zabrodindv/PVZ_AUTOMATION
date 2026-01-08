@@ -121,6 +121,42 @@ def is_vpn_connected() -> bool:
     return netbird_ok and connectivity_ok
 
 
+def get_auth_url() -> str | None:
+    """
+    Получить URL для SSO авторизации через netbird login.
+
+    Returns:
+        str | None: URL для авторизации или None
+    """
+    try:
+        logger.info("Выполняем: netbird login для получения SSO URL")
+        result = subprocess.run(
+            ["netbird", "login"],
+            capture_output=True,
+            text=True,
+            timeout=30  # Увеличенный timeout для login
+        )
+
+        output = result.stdout + result.stderr
+
+        # Ищем URL с user_code
+        url_match = re.search(r'(https://[^\s]+user_code=[A-Z0-9-]+)', output)
+        if url_match:
+            return url_match.group(1)
+
+        # Альтернативный паттерн - просто URL с device
+        url_match = re.search(r'(https://[^\s]+/device\?user_code=[A-Z0-9-]+)', output)
+        if url_match:
+            return url_match.group(1)
+
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout при получении auth URL")
+    except Exception as e:
+        logger.error(f"Ошибка получения auth URL: {e}")
+
+    return None
+
+
 def reconnect_vpn(max_retries: int = 3) -> tuple[bool, int, str | None]:
     """
     Переподключить VPN через netbird down/up
@@ -186,6 +222,13 @@ def reconnect_vpn(max_retries: int = 3) -> tuple[bool, int, str | None]:
 
         except subprocess.TimeoutExpired:
             logger.error(f"Timeout при переподключении (попытка {attempt})")
+            # При timeout пробуем получить auth URL через netbird login
+            if attempt == max_retries:
+                logger.info("Пробуем получить auth URL через netbird login...")
+                auth_url = get_auth_url()
+                if auth_url:
+                    logger.warning(f"Получен SSO URL: {auth_url}")
+                    return False, attempt, auth_url
         except Exception as e:
             logger.error(f"Ошибка переподключения (попытка {attempt}): {e}")
 
@@ -350,7 +393,7 @@ def main():
     # Обработка состояний
     if vpn_connected:
         # VPN подключён
-        if previous_status == "disconnected":
+        if previous_status in ("disconnected", "auth_required"):
             # Восстановление после отключения (без нашего вмешательства)
             logger.info("VPN восстановился автоматически")
             message = format_telegram_message("recovered")
@@ -365,44 +408,61 @@ def main():
         # VPN отключён
         logger.warning("VPN отключён - начинаем процесс переподключения")
 
-        # Отправляем уведомление об отключении (с учётом cooldown)
-        if should_send_notification(state, cooldown_minutes=30):
-            message = format_telegram_message("disconnect")
-            send_telegram_alert(message)
-            state["last_notification_time"] = datetime.now().isoformat()
+        # Проверяем cooldown для уведомлений (30 минут)
+        can_send_notification = should_send_notification(state, cooldown_minutes=30)
 
-        # Пытаемся переподключить
-        success, attempt, auth_url = reconnect_vpn(max_retries=3)
-
-        if success:
-            # Успешное переподключение
-            logger.info("VPN успешно переподключён")
-            message = format_telegram_message(
-                "reconnect_success",
-                attempt=attempt,
-                max_attempts=3
-            )
-            send_telegram_alert(message)
-            state["last_notification_time"] = datetime.now().isoformat()
-            state["last_status"] = "connected"
-            state["reconnect_count"] += 1
-            state["consecutive_failures"] = 0
-        elif auth_url:
-            # Требуется SSO авторизация
-            logger.warning(f"Требуется SSO авторизация: {auth_url}")
-            message = format_telegram_message("auth_required", auth_url=auth_url)
-            send_telegram_alert(message)
-            state["last_notification_time"] = datetime.now().isoformat()
-            state["last_status"] = "auth_required"
+        # Если предыдущий статус был auth_required, пробуем только получить свежий URL
+        if previous_status == "auth_required":
+            logger.info("Предыдущий статус auth_required - получаем свежий SSO URL")
+            auth_url = get_auth_url()
+            if auth_url and can_send_notification:
+                message = format_telegram_message("auth_required", auth_url=auth_url)
+                send_telegram_alert(message)
+                state["last_notification_time"] = datetime.now().isoformat()
             state["consecutive_failures"] += 1
+            # Статус остаётся auth_required
         else:
-            # Неудачное переподключение
-            logger.error("Не удалось переподключить VPN")
-            message = format_telegram_message("reconnect_failure", attempts=3)
-            send_telegram_alert(message)
-            state["last_notification_time"] = datetime.now().isoformat()
-            state["last_status"] = "disconnected"
-            state["consecutive_failures"] += 1
+            # Первое отключение или повторная попытка - пробуем переподключить
+            # Отправляем уведомление об отключении (с учётом cooldown)
+            if can_send_notification and previous_status != "disconnected":
+                message = format_telegram_message("disconnect")
+                send_telegram_alert(message)
+                state["last_notification_time"] = datetime.now().isoformat()
+
+            # Пытаемся переподключить
+            success, attempt, auth_url = reconnect_vpn(max_retries=3)
+
+            if success:
+                # Успешное переподключение
+                logger.info("VPN успешно переподключён")
+                message = format_telegram_message(
+                    "reconnect_success",
+                    attempt=attempt,
+                    max_attempts=3
+                )
+                send_telegram_alert(message)
+                state["last_notification_time"] = datetime.now().isoformat()
+                state["last_status"] = "connected"
+                state["reconnect_count"] += 1
+                state["consecutive_failures"] = 0
+            elif auth_url:
+                # Требуется SSO авторизация
+                logger.warning(f"Требуется SSO авторизация: {auth_url}")
+                if can_send_notification:
+                    message = format_telegram_message("auth_required", auth_url=auth_url)
+                    send_telegram_alert(message)
+                    state["last_notification_time"] = datetime.now().isoformat()
+                state["last_status"] = "auth_required"
+                state["consecutive_failures"] += 1
+            else:
+                # Неудачное переподключение
+                logger.error("Не удалось переподключить VPN")
+                if can_send_notification:
+                    message = format_telegram_message("reconnect_failure", attempts=3)
+                    send_telegram_alert(message)
+                    state["last_notification_time"] = datetime.now().isoformat()
+                state["last_status"] = "disconnected"
+                state["consecutive_failures"] += 1
 
     # Обновляем время последней проверки
     state["last_check"] = datetime.now().isoformat()
