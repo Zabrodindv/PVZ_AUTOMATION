@@ -212,8 +212,8 @@ def format_report_for_telegram(report_df: pd.DataFrame, report_date: datetime) -
     return "\n".join(lines)
 
 
-def get_last_run_date() -> datetime | None:
-    """Получить дату последнего успешного запуска"""
+def get_last_report_date() -> datetime | None:
+    """Получить дату последнего отправленного отчёта (за какой день был отчёт)"""
     if LAST_RUN_FILE.exists():
         try:
             date_str = LAST_RUN_FILE.read_text().strip()
@@ -223,34 +223,41 @@ def get_last_run_date() -> datetime | None:
     return None
 
 
-def save_last_run_date(date: datetime):
-    """Сохранить дату последнего успешного запуска"""
+def save_last_report_date(date: datetime):
+    """Сохранить дату последнего отправленного отчёта"""
     LAST_RUN_FILE.write_text(date.strftime("%Y-%m-%d"))
 
 
-def get_missed_dates(last_run: datetime | None) -> list[datetime]:
-    """Получить список пропущенных дат (по времени Ташкента)"""
-    # Используем время Ташкента для определения "сегодня"
+def get_report_dates() -> list[datetime]:
+    """
+    Получить список дат, за которые нужно отправить отчёты.
+
+    Логика:
+    - Скрипт запускается в 10:00 по Ташкенту (08:00 МСК)
+    - Нужно отправить отчёт за вчерашний день
+    - Если есть пропущенные дни - отправляем за все пропущенные
+    """
     now_tashkent = datetime.now(TZ_TASHKENT)
     today = now_tashkent.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
 
-    if last_run is None:
-        # Если нет записи - отправляем только за сегодня
-        return [today]
+    # Отчёт всегда за предыдущий день
+    yesterday = today - timedelta(days=1)
 
-    missed = []
-    current = last_run + timedelta(days=1)
-    while current <= today:
-        missed.append(current)
+    last_report = get_last_report_date()
+
+    if last_report is None:
+        # Первый запуск - отправляем только за вчера
+        return [yesterday]
+
+    # Собираем все пропущенные даты (от последнего отчёта до вчера включительно)
+    dates_to_report = []
+    current = last_report + timedelta(days=1)
+
+    while current <= yesterday:
+        dates_to_report.append(current)
         current += timedelta(days=1)
 
-    # Если список пустой, мы в вечернее время (после 20:00) И last_run < today
-    # то отправляем за сегодня. Это покрывает случай когда скрипт запускается
-    # в 22:00 того же дня, но отчёт ещё не отправлялся
-    if not missed and now_tashkent.hour >= 20 and last_run < today:
-        missed.append(today)
-
-    return missed
+    return dates_to_report
 
 
 def send_report_for_date(report_date: datetime, delivery_point_type: str = 'FRANCHISE') -> bool:
@@ -300,20 +307,20 @@ def main():
     print("VPN подключен.")
     print()
 
-    # Проверка пропущенных запусков
-    last_run = get_last_run_date()
-    if last_run:
-        print(f"Последний успешный запуск: {last_run.date()}")
+    # Получаем даты для отправки отчётов
+    last_report = get_last_report_date()
+    if last_report:
+        print(f"Последний отчёт за: {last_report.date()}")
     else:
         print("Первый запуск")
 
-    missed_dates = get_missed_dates(last_run)
+    report_dates = get_report_dates()
 
-    if not missed_dates:
-        print("Нет пропущенных дат.")
+    if not report_dates:
+        print("Нет дат для отправки отчётов.")
         return 0
 
-    print(f"Даты для отправки: {[d.strftime('%Y-%m-%d') for d in missed_dates]}")
+    print(f"Даты для отчётов: {[d.strftime('%Y-%m-%d') for d in report_dates]}")
     print()
 
     # Типы ПВЗ для обработки
@@ -323,7 +330,7 @@ def main():
     overall_success = True
     last_successful_date = None
 
-    for date in missed_dates:
+    for date in report_dates:
         date_success = True
         for dp_type in dp_types:
             # Проверяем, настроен ли chat_id для этого типа
@@ -338,12 +345,12 @@ def main():
 
         # Сохраняем дату только если хотя бы один отчёт отправлен успешно
         if date_success:
-            save_last_run_date(date)
+            save_last_report_date(date)
             last_successful_date = date
 
     print()
     if last_successful_date:
-        print(f"Последняя успешная дата: {last_successful_date.date()}")
+        print(f"Последний успешный отчёт за: {last_successful_date.date()}")
 
     return 0 if overall_success else 1
 
