@@ -240,8 +240,15 @@ def reconnect_vpn(max_retries: int = 3) -> tuple[bool, int, str | None]:
     return False, max_retries, auth_url
 
 
-def send_telegram_alert(message: str, retries: int = 3) -> bool:
-    """Отправить уведомление в Telegram через curl (обход VPN/DNS проблем)"""
+def send_telegram_alert(message: str, max_time: int = 900) -> bool:
+    """
+    Отправить уведомление в Telegram через curl (обход VPN/DNS проблем).
+    Пробует отправить пока не получится или не истечёт max_time секунд.
+
+    Args:
+        message: Текст сообщения
+        max_time: Максимальное время попыток в секундах (по умолчанию 15 минут)
+    """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         logger.warning("Telegram credentials не настроены")
         return False
@@ -253,11 +260,24 @@ def send_telegram_alert(message: str, retries: int = 3) -> bool:
         "parse_mode": "HTML",
     })
 
-    for attempt in range(retries):
+    start_time = time.time()
+    attempt = 0
+    delay = 10  # Начальная пауза между попытками
+    max_delay = 60  # Максимальная пауза
+
+    while True:
+        attempt += 1
+        elapsed = time.time() - start_time
+
+        if elapsed > max_time:
+            logger.error(f"Превышено максимальное время отправки ({max_time} сек), попыток: {attempt - 1}")
+            return False
+
         try:
             result = subprocess.run(
                 ['curl', '-s', '-X', 'POST', url,
                  '-H', 'Content-Type: application/json',
+                 '--connect-timeout', '10',
                  '-d', payload],
                 capture_output=True,
                 text=True,
@@ -265,14 +285,23 @@ def send_telegram_alert(message: str, retries: int = 3) -> bool:
             )
             response = json.loads(result.stdout)
             if response.get('ok', False):
-                logger.info("Telegram уведомление отправлено")
+                if attempt > 1:
+                    logger.info(f"Telegram уведомление отправлено с {attempt}-й попытки")
+                else:
+                    logger.info("Telegram уведомление отправлено")
                 return True
-        except Exception as e:
-            if attempt == retries - 1:
-                logger.error(f"Ошибка отправки в Telegram: {e}")
             else:
-                time.sleep(2)
-    return False
+                error_desc = response.get('description', 'Unknown error')
+                logger.warning(f"Telegram API ошибка: {error_desc}")
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Попытка {attempt}: таймаут, повтор через {delay} сек...")
+        except json.JSONDecodeError:
+            logger.warning(f"Попытка {attempt}: некорректный ответ, повтор через {delay} сек...")
+        except Exception as e:
+            logger.warning(f"Попытка {attempt}: {e}, повтор через {delay} сек...")
+
+        time.sleep(delay)
+        delay = min(delay * 1.5, max_delay)  # Exponential backoff
 
 
 def load_state() -> dict:

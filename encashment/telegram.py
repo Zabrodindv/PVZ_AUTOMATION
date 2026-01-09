@@ -71,8 +71,17 @@ def check_vpn() -> bool:
     return False
 
 
-def send_telegram_message(text: str, chat_id: str = None, parse_mode: str = "HTML", retries: int = 3) -> bool:
-    """Отправить сообщение в Telegram через curl (обход VPN/DNS проблем)"""
+def send_telegram_message(text: str, chat_id: str = None, parse_mode: str = "HTML", max_time: int = 900) -> bool:
+    """
+    Отправить сообщение в Telegram через curl (обход VPN/DNS проблем).
+    Пробует отправить пока не получится или не истечёт max_time секунд.
+
+    Args:
+        text: Текст сообщения
+        chat_id: ID чата
+        parse_mode: Режим парсинга (HTML/Markdown)
+        max_time: Максимальное время попыток в секундах (по умолчанию 15 минут)
+    """
     import json
     import time
 
@@ -86,11 +95,24 @@ def send_telegram_message(text: str, chat_id: str = None, parse_mode: str = "HTM
         "parse_mode": parse_mode,
     })
 
-    for attempt in range(retries):
+    start_time = time.time()
+    attempt = 0
+    delay = 10  # Начальная пауза между попытками
+    max_delay = 60  # Максимальная пауза
+
+    while True:
+        attempt += 1
+        elapsed = time.time() - start_time
+
+        if elapsed > max_time:
+            print(f"Превышено максимальное время отправки ({max_time} сек), попыток: {attempt - 1}")
+            return False
+
         try:
             result = subprocess.run(
                 ['curl', '-s', '-X', 'POST', url,
                  '-H', 'Content-Type: application/json',
+                 '--connect-timeout', '10',
                  '-d', payload],
                 capture_output=True,
                 text=True,
@@ -98,13 +120,21 @@ def send_telegram_message(text: str, chat_id: str = None, parse_mode: str = "HTM
             )
             response = json.loads(result.stdout)
             if response.get('ok', False):
+                if attempt > 1:
+                    print(f"    Отправлено с {attempt}-й попытки")
                 return True
-        except Exception as e:
-            if attempt == retries - 1:
-                print(f"Ошибка отправки в Telegram: {e}")
             else:
-                time.sleep(2)  # Пауза перед повтором
-    return False
+                error_desc = response.get('description', 'Unknown error')
+                print(f"    Telegram API ошибка: {error_desc}")
+        except subprocess.TimeoutExpired:
+            print(f"    Попытка {attempt}: таймаут, повтор через {delay} сек...")
+        except json.JSONDecodeError:
+            print(f"    Попытка {attempt}: некорректный ответ, повтор через {delay} сек...")
+        except Exception as e:
+            print(f"    Попытка {attempt}: {e}, повтор через {delay} сек...")
+
+        time.sleep(delay)
+        delay = min(delay * 1.5, max_delay)  # Exponential backoff
 
 
 def categorize_reason(comment: str) -> str:

@@ -5,7 +5,6 @@
 import os
 import sys
 import subprocess
-import requests
 import pytz
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -47,22 +46,66 @@ def check_vpn() -> bool:
     return False
 
 
-def send_telegram_message(text: str, parse_mode: str = "HTML") -> bool:
-    """Отправить сообщение в Telegram"""
+def send_telegram_message(text: str, parse_mode: str = "HTML", max_time: int = 900) -> bool:
+    """
+    Отправить сообщение в Telegram через curl (обход VPN/DNS проблем).
+    Пробует отправить пока не получится или не истечёт max_time секунд.
+
+    Args:
+        text: Текст сообщения
+        parse_mode: Режим парсинга (HTML/Markdown)
+        max_time: Максимальное время попыток в секундах (по умолчанию 15 минут)
+    """
+    import json
+    import time
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
+    payload = json.dumps({
         "chat_id": TELEGRAM_CHAT_ID,
         "text": text,
         "parse_mode": parse_mode,
-    }
-    try:
-        response = requests.post(url, json=payload, timeout=30)
-        if response.status_code != 200:
-            print(f"Telegram API error: {response.text}")
-        return response.status_code == 200
-    except Exception as e:
-        print(f"Ошибка отправки в Telegram: {e}")
-        return False
+    })
+
+    start_time = time.time()
+    attempt = 0
+    delay = 10  # Начальная пауза между попытками
+    max_delay = 60  # Максимальная пауза
+
+    while True:
+        attempt += 1
+        elapsed = time.time() - start_time
+
+        if elapsed > max_time:
+            print(f"Превышено максимальное время отправки ({max_time} сек), попыток: {attempt - 1}")
+            return False
+
+        try:
+            result = subprocess.run(
+                ['curl', '-s', '-X', 'POST', url,
+                 '-H', 'Content-Type: application/json',
+                 '--connect-timeout', '10',
+                 '-d', payload],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            response = json.loads(result.stdout)
+            if response.get('ok', False):
+                if attempt > 1:
+                    print(f"    Отправлено с {attempt}-й попытки")
+                return True
+            else:
+                error_desc = response.get('description', 'Unknown error')
+                print(f"    Telegram API ошибка: {error_desc}")
+        except subprocess.TimeoutExpired:
+            print(f"    Попытка {attempt}: таймаут, повтор через {delay} сек...")
+        except json.JSONDecodeError:
+            print(f"    Попытка {attempt}: некорректный ответ, повтор через {delay} сек...")
+        except Exception as e:
+            print(f"    Попытка {attempt}: {e}, повтор через {delay} сек...")
+
+        time.sleep(delay)
+        delay = min(delay * 1.5, max_delay)  # Exponential backoff
 
 
 def format_report_for_telegram(report: dict) -> str:
