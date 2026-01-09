@@ -237,6 +237,14 @@ def reconnect_vpn(max_retries: int = 3) -> tuple[bool, int, str | None]:
             time.sleep(3)
 
     logger.error(f"Не удалось переподключить VPN после {max_retries} попыток")
+
+    # Если auth_url не был получен во время попыток, пробуем получить его явно
+    if auth_url is None:
+        logger.info("Пробуем получить auth URL через netbird login...")
+        auth_url = get_auth_url()
+        if auth_url:
+            logger.warning(f"Получен SSO URL: {auth_url}")
+
     return False, max_retries, auth_url
 
 
