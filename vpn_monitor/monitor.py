@@ -157,6 +157,31 @@ def get_auth_url() -> str | None:
     return None
 
 
+def restart_netbird_daemon() -> bool:
+    """Перезапустить демон netbird через systemctl"""
+    try:
+        logger.info("Перезапускаем демон netbird...")
+        result = subprocess.run(
+            ["sudo", "systemctl", "restart", "netbird"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        if result.returncode == 0:
+            logger.info("Демон netbird перезапущен")
+            time.sleep(3)  # Даём демону время запуститься
+            return True
+        else:
+            logger.warning(f"Ошибка перезапуска демона: {result.stderr}")
+            return False
+    except subprocess.TimeoutExpired:
+        logger.warning("Timeout при перезапуске демона netbird")
+        return False
+    except Exception as e:
+        logger.error(f"Ошибка перезапуска демона: {e}")
+        return False
+
+
 def reconnect_vpn(max_retries: int = 3) -> tuple[bool, int, str | None]:
     """
     Переподключить VPN через netbird down/up
@@ -165,6 +190,9 @@ def reconnect_vpn(max_retries: int = 3) -> tuple[bool, int, str | None]:
         tuple[bool, int, str | None]: (успех, номер попытки, auth_url если требуется SSO)
     """
     auth_url = None
+
+    # Перезапускаем демон перед попытками (помогает если netbird завис)
+    restart_netbird_daemon()
 
     for attempt in range(1, max_retries + 1):
         logger.info(f"Попытка переподключения {attempt}/{max_retries}")
