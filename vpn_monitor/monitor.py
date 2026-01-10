@@ -125,32 +125,66 @@ def get_auth_url() -> str | None:
     """
     Получить URL для SSO авторизации через netbird login.
 
+    netbird login выводит URL, но потом ждёт авторизации в браузере.
+    Используем Popen чтобы читать вывод потоково и получить URL до timeout.
+
     Returns:
         str | None: URL для авторизации или None
     """
     try:
         logger.info("Выполняем: netbird login для получения SSO URL")
-        result = subprocess.run(
+
+        # Используем Popen для потокового чтения вывода
+        process = subprocess.Popen(
             ["netbird", "login"],
-            capture_output=True,
-            text=True,
-            timeout=30  # Увеличенный timeout для login
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True
         )
 
-        output = result.stdout + result.stderr
+        output_lines = []
+        start_time = time.time()
+        timeout_seconds = 15  # Достаточно для получения URL
 
-        # Ищем URL с user_code
-        url_match = re.search(r'(https://[^\s]+user_code=[A-Z0-9-]+)', output)
+        # Читаем вывод построчно до нахождения URL или timeout
+        while True:
+            # Проверяем timeout
+            if time.time() - start_time > timeout_seconds:
+                logger.debug("Timeout чтения, проверяем собранный вывод")
+                break
+
+            # Читаем строку (неблокирующе через poll не работает, но readline быстрая)
+            line = process.stdout.readline()
+            if line:
+                output_lines.append(line)
+                logger.debug(f"netbird login output: {line.strip()}")
+
+                # Проверяем наличие URL в строке
+                url_match = re.search(r'(https://[^\s]+user_code=[A-Z0-9-]+)', line)
+                if url_match:
+                    auth_url = url_match.group(1)
+                    logger.info(f"Найден auth URL: {auth_url}")
+                    process.terminate()
+                    return auth_url
+
+            # Проверяем, не завершился ли процесс
+            if process.poll() is not None:
+                break
+
+        # Завершаем процесс если ещё работает
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+
+        # Проверяем собранный вывод на случай если URL был пропущен
+        full_output = ''.join(output_lines)
+        url_match = re.search(r'(https://[^\s]+user_code=[A-Z0-9-]+)', full_output)
         if url_match:
             return url_match.group(1)
 
-        # Альтернативный паттерн - просто URL с device
-        url_match = re.search(r'(https://[^\s]+/device\?user_code=[A-Z0-9-]+)', output)
-        if url_match:
-            return url_match.group(1)
-
-    except subprocess.TimeoutExpired:
-        logger.warning("Timeout при получении auth URL")
     except Exception as e:
         logger.error(f"Ошибка получения auth URL: {e}")
 
