@@ -143,9 +143,22 @@ class TelegramBot:
         """Показать справку."""
         text = """<b>VPN Bot - Управление Netbird</b>
 
-/vpn_status - Показать статус VPN
-/vpn_restart - Перезапустить демон
-/vpn_reconnect - Переподключить (down + up)"""
+<b>/vpn_status</b>
+Показать текущий статус VPN: подключение, пиры, IP-адрес и доступность внутренних хостов.
+<i>Используй для проверки работает ли VPN.</i>
+
+<b>/vpn_restart</b>
+Перезапустить демон netbird и подключиться.
+<i>Используй после SSO авторизации в браузере, чтобы применить токен и подключить VPN.</i>
+
+<b>/vpn_reconnect</b>
+Выполнить netbird down + netbird up.
+<i>Используй если VPN завис или нужно переподключиться без перезапуска демона.</i>
+
+<b>Типичный сценарий:</b>
+1. Получил ссылку SSO → перешёл, авторизовался
+2. Выполнил /vpn_restart
+3. Проверил /vpn_status"""
         self.send_message(chat_id, text)
 
     def cmd_vpn_status(self, chat_id: int) -> None:
