@@ -1,0 +1,17 @@
+[Unit]
+Description=VPN Bot - Telegram bot for Netbird VPN management
+After=network.target netbird.service
+
+[Service]
+Type=simple
+User=denis
+WorkingDirectory=/home/denis/pvz_automation
+ExecStart=/home/denis/pvz_automation/venv/bin/python3 /home/denis/pvz_automation/vpn_monitor/vpn_bot.py
+Restart=always
+RestartSec=10
+
+# Environment
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

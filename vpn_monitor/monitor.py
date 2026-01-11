@@ -510,9 +510,36 @@ def main():
         # Проверяем cooldown для уведомлений (30 минут)
         can_send_notification = should_send_notification(state, cooldown_minutes=30)
 
-        # Если предыдущий статус был auth_required, пробуем только получить свежий URL
+        # Если предыдущий статус был auth_required, пользователь мог авторизоваться
+        # Перезапускаем демон чтобы применить авторизацию
         if previous_status == "auth_required":
-            logger.info("Предыдущий статус auth_required - получаем свежий SSO URL")
+            logger.info("Предыдущий статус auth_required - перезапускаем демон для применения SSO")
+            restart_netbird_daemon()
+
+            # Пробуем подключить
+            result = subprocess.run(
+                ["netbird", "up"],
+                capture_output=True,
+                text=True,
+                timeout=15
+            )
+            time.sleep(5)
+
+            # Проверяем, подключился ли VPN
+            if is_vpn_connected():
+                logger.info("VPN подключился после SSO авторизации!")
+                message = format_telegram_message("recovered")
+                send_telegram_alert(message)
+                state["last_notification_time"] = datetime.now().isoformat()
+                state["last_status"] = "connected"
+                state["consecutive_failures"] = 0
+                state["last_check"] = datetime.now().isoformat()
+                save_state(state)
+                logger.info("=== Проверка завершена ===\n")
+                return 0
+
+            # Если не подключился, получаем свежий URL
+            logger.info("VPN не подключился - получаем свежий SSO URL")
             auth_url = get_auth_url()
             if auth_url and can_send_notification:
                 message = format_telegram_message("auth_required", auth_url=auth_url)
